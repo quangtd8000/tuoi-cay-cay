@@ -3,6 +3,8 @@
 #include <RTClib.h>
 #include <LiquidCrystal_I2C.h>
 #include <Adafruit_NeoPixel.h>
+#include <avr/wdt.h>
+
 
 // --- KHAI BÁO PIN ---
 #define PIN_SOIL_1 A0
@@ -70,6 +72,7 @@ struct PumpTask {
     unsigned long startTime;
     bool running;
 };
+
 PumpTask pumps[2];
 bool abortWatering = false;
 bool needToWater = false;
@@ -85,12 +88,10 @@ int lcdPage = 0;
 
 // --- HÀM KIỂM TRA BAN ĐÊM ---
 bool isNight() {
-    bool nightByTime = (nowRTC.hour()>= 18 || (nowRTC.hour()< 6));
-
-    bool nightByLight = (currentLightLevel < 80); 
-
-    return nightByTime || nightByLight;
+    int h = nowRTC.hour();
+    return (h >= 18 || h < 6);
 }
+
 
 void handleButton() {
     unsigned long now = millis();
@@ -156,6 +157,20 @@ bool checkWaterLow() {
     if (duration == 0) return true; 
     return (waterDistance > LOW_WATER_THRESHOLD); 
 }
+void updateDynamicThresholds() {
+    activeVeryDry = THR_VERY_DRY; 
+    activeDry = THR_DRY; 
+    activeMild = THR_MILD; 
+    isHarshEnv = false;
+
+    // Nếu t>36 hoặc l > 120 -> Giảm ngưỡng (tưới sớm hơn)
+    if (currentTemp > 36 || currentLightLevel > 120) {
+        activeVeryDry -= 50; 
+        activeDry -= 50; 
+        activeMild -= 50; 
+        isHarshEnv = true;
+    }
+}
 
 void updatePumpTasks() {
     unsigned long now = millis();
@@ -185,7 +200,7 @@ void setup() {
     rtc.begin();
     
     // NẾU RTC CHƯA ĐÚNG GIỜ, BỎ DẤU // Ở DÒNG DƯỚI ĐỂ CÀI LẠI GIỜ MÁY TÍNH
-    rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
+    //rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
 
     strip.begin(); 
     strip.setBrightness(120); 
@@ -201,15 +216,22 @@ void setup() {
     
     pumps[0] = {INT1, INT2, 0, 0, false};
     pumps[1] = {INT3, INT4, 0, 0, false};
-    changeState(SystemState::WARMUP);
+    changeState(SystemState::IDLE);
+    wdt_enable(WDTO_4S);  // reset nếu treo quá 4 giây
+
 }
 
 void loop() {
+    wdt_reset();
+
     unsigned long now = millis();
 
     // 1. Cập nhật môi trường & LED
     if (now - envTimer >= TIME_ENV_UPDATE) {
-    currentTemp = dht.readTemperature();
+    float t = dht.readTemperature();
+    if (!isnan(t)) {
+        currentTemp = t;
+    }
     currentLightLevel = analogRead(PIN_LDR);
     nowRTC = rtc.now();
     waterLowCached = checkWaterLow(); 
@@ -230,7 +252,7 @@ void loop() {
         }
     }
 
-    // 3. Máy trạng thái
+    // 3. trạng thái máy 
     switch (currentState) {
         case SystemState::IDLE:
             if (now - stateTimer >= TIME_IDLE) {
@@ -254,10 +276,9 @@ void loop() {
             }
             if (soilCount >= MAX_SAMPLES) { 
                 activeVeryDry = THR_VERY_DRY; activeDry = THR_DRY; activeMild = THR_MILD;
-                isHarshEnv = (currentTemp > 36 || currentLightLevel > 120);
-                if (isHarshEnv) { activeVeryDry -= 50; activeDry -= 50; activeMild -= 50; }
-                
-                avgs[0] = soilSum1/MAX_SAMPLES; avgs[1] = soilSum2/MAX_SAMPLES; 
+                updateDynamicThresholds(); 
+                avgs[0] = soilSum1/MAX_SAMPLES; 
+                avgs[1] = soilSum2/MAX_SAMPLES; 
                 needToWater = false;
                 for (int i = 0; i < 2; i++) {
                     if (avgs[i] >= activeVeryDry) pumps[i].duration = longDuration; 
@@ -285,7 +306,7 @@ void loop() {
 
     // 4. Hiển thị LCD
     if (now - lcdTimer >= ((currentState == SystemState::READING)||(currentState == SystemState::WARMUP) ? 1000 : TIME_LCD_PAGE)) {
-        lcd.clear();
+        lcd.clear();// nuốt clear 
         if (currentState == SystemState::WARMUP) {
             lcd.print("WARMING UP...");
             lcd.setCursor(0, 1); lcd.print("Wait: "); lcd.print((TIME_WARMUP - (now - stateTimer)) / 1000); lcd.print("s");
@@ -296,10 +317,15 @@ void loop() {
             lcd.print("WATERING...");
             lcd.setCursor(0, 1); lcd.print("P1:"); lcd.print(pumps[0].duration/1000); lcd.print("s P2:"); lcd.print(pumps[1].duration/1000);lcd.print("s");
         } else if (currentState == SystemState::REPORT) {
-            lcd.print(needToWater ? "Watering Done!" : "Soil is Wet OK");
+            lcd.print(needToWater ? "Watering Done!" : "Soil Moisture OK");
+
+            lcd.setCursor(0, 1); 
+            if(isHarshEnv){
+                lcd.print("Harsh Weather") ; 
+            }
         } else {
             // IDLE Xoay vòng
-            lcdPage = (lcdPage + 1) % 4;
+            lcdPage = (lcdPage + 1) % 5;
             switch(lcdPage) {
                 case 0: 
                     lcd.print("Time: "); lcd.print(nowRTC.hour()); lcd.print(":"); lcd.print(nowRTC.minute());
@@ -325,6 +351,15 @@ void loop() {
                         lcd.print("System Active");
                     }
                     break;
+                case 4: 
+                    if(isHarshEnv){
+                        lcd.print("Warning!") ; 
+                        lcd.setCursor(0,1) ; 
+                        lcd.print("Harsh weather"); 
+                    }else{
+                        lcd.print("Conditions normal"); 
+                    }
+                    break; 
             }
         }
         lcdTimer = now;
