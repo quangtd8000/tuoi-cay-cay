@@ -1,0 +1,332 @@
+#include <Wire.h>
+#include <DHT.h>
+#include <RTClib.h>
+#include <LiquidCrystal_I2C.h>
+#include <Adafruit_NeoPixel.h>
+
+// --- KHAI BÁO PIN ---
+#define PIN_SOIL_1 A0
+#define PIN_SOIL_2 A1
+#define PIN_LDR    A3
+#define PIN_DHT    4
+#define DHTTYPE    DHT11
+
+#define BUTTON     2   
+#define PIN_NEO    13   // Chân dữ liệu LED NeoPixel
+#define NUM_LEDS   12  
+
+#define INT1 5
+#define INT2 6
+#define INT3 7
+#define INT4 8 
+
+#define PIN_SENSOR_PWR1 9
+#define PIN_SENSOR_PWR2 10
+
+#define PIN_TRIG   11
+#define PIN_ECHO   12
+
+// --- Cấu hình Đối tượng ---
+Adafruit_NeoPixel strip(NUM_LEDS, PIN_NEO, NEO_GRB + NEO_KHZ800);
+LiquidCrystal_I2C lcd(0x27, 20, 4);
+DHT dht(PIN_DHT, DHTTYPE);
+RTC_DS3231 rtc;
+
+// --- BIẾN TOÀN CỤC ---
+const unsigned long TIME_IDLE       = 60000; 
+const unsigned long TIME_WARMUP     = 10000; 
+const int           MAX_SAMPLES     = 10; 
+const unsigned long TIME_ENV_UPDATE = 2000; 
+const unsigned long TIME_LCD_PAGE   = 2000;
+const unsigned long TIME_REPORT     = 5000;
+
+const int FULL_WATER_DISTANCE = 2; 
+const int LOW_WATER_THRESHOLD = 20; 
+bool waterLowCached = false;
+
+int THR_VERY_DRY = 700; 
+int THR_DRY      = 550; 
+int THR_MILD     = 450; 
+int activeVeryDry, activeDry, activeMild; 
+bool isHarshEnv = false;
+
+enum class SystemState { IDLE, WARMUP, READING, WATERING, REPORT };
+SystemState currentState = SystemState::IDLE; 
+
+float soilSum1 = 0, soilSum2 = 0;
+int soilCount = 0;
+int avgs[2] = {0, 0};
+float currentTemp = 0;
+int currentLightLevel = 0;
+int waterDistance = 0;
+DateTime nowRTC;
+
+volatile bool manualTrigger = false;
+unsigned long lastDebounceTime = 0;
+
+struct PumpTask {
+    int pinA; int pinB;
+    unsigned long duration;
+    unsigned long startTime;
+    bool running;
+};
+PumpTask pumps[2];
+bool abortWatering = false;
+bool needToWater = false;
+int longDuration = 6000; 
+int mediumDuration = 4000; 
+int shortDuration = 3000; 
+
+unsigned long stateTimer = 0;
+unsigned long envTimer = 0;
+unsigned long soilSampleTimer = 0;
+unsigned long lcdTimer = 0;
+int lcdPage = 0;
+
+// --- HÀM KIỂM TRA BAN ĐÊM ---
+bool isNight() {
+    bool nightByTime = (nowRTC.hour()>= 18 || (nowRTC.hour()< 6));
+
+    bool nightByLight = (currentLightLevel < 80); 
+
+    return nightByTime || nightByLight;
+}
+
+void handleButton() {
+    unsigned long now = millis();
+    if (now - lastDebounceTime > 300) {
+        manualTrigger = true;
+        lastDebounceTime = now;
+    }
+}
+
+void setStripColor(uint32_t color) {
+    for(int i=0; i<NUM_LEDS; i++) strip.setPixelColor(i, color);
+    strip.show();
+}
+
+void updateLEDStatus() {
+    static int head = 0;
+    static unsigned long lastLEDMove = 0;
+
+    if (waterLowCached) {
+        if ((millis() / 500) % 2 == 0) setStripColor(strip.Color(200, 0, 0));
+        else setStripColor(strip.Color(0, 0, 0));
+    } 
+    else if (currentState == SystemState::WATERING) {
+        if (millis() - lastLEDMove > 80) {
+            strip.clear();
+            int tail = (head + NUM_LEDS - 1) % NUM_LEDS;
+            strip.setPixelColor(head, strip.Color(0, 0, 255));
+            strip.setPixelColor(tail, strip.Color(0, 0, 100));
+            strip.show();
+            head = (head + 1) % NUM_LEDS;
+            lastLEDMove = millis();
+        }
+    }
+    else if (isNight()) {
+        // Ban đêm: Sáng đèn ngủ màu trắng ấm/vàng nhẹ
+        setStripColor(strip.Color(50, 40, 20)); 
+    }
+    else {
+        setStripColor(strip.Color(0, 0, 0)); // Ban ngày tắt đèn
+    }
+}
+
+void turnSensors(bool on) {
+    digitalWrite(PIN_SENSOR_PWR1, on ? HIGH : LOW);
+    digitalWrite(PIN_SENSOR_PWR2, on ? HIGH : LOW);
+}
+
+void changeState(SystemState newState) {
+    stateTimer = millis();
+    soilSampleTimer = millis(); 
+    currentState = newState;
+    if (newState == SystemState::READING) { soilSum1 = 0; soilSum2 = 0; soilCount = 0; }
+    if (newState == SystemState::IDLE) turnSensors(false);
+    if (newState == SystemState::WARMUP) turnSensors(true);
+}
+
+bool checkWaterLow() { 
+    digitalWrite(PIN_TRIG, LOW); delayMicroseconds(5); 
+    digitalWrite(PIN_TRIG, HIGH); delayMicroseconds(10); 
+    digitalWrite(PIN_TRIG, LOW); 
+    long duration = pulseIn(PIN_ECHO, HIGH, 25000); 
+    waterDistance = (duration / 2) * 0.0343; 
+    if (duration == 0) return true; 
+    return (waterDistance > LOW_WATER_THRESHOLD); 
+}
+
+void updatePumpTasks() {
+    unsigned long now = millis();
+    if (abortWatering) {
+        for (int i = 0; i < 2; i++) {
+            digitalWrite(pumps[i].pinA, LOW); digitalWrite(pumps[i].pinB, LOW);
+            pumps[i].running = false; pumps[i].duration = 0;
+        }
+        return;
+    }
+    for (int i = 0; i < 2; i++) {
+        if (!pumps[i].running && pumps[i].duration > 0) {
+            digitalWrite(pumps[i].pinA, HIGH); digitalWrite(pumps[i].pinB, LOW);
+            pumps[i].startTime = now; pumps[i].running = true;
+        }
+        if (pumps[i].running && (now - pumps[i].startTime >= pumps[i].duration)) {
+            digitalWrite(pumps[i].pinA, LOW); digitalWrite(pumps[i].pinB, LOW);
+            pumps[i].running = false; pumps[i].duration = 0;
+        }
+    }
+}
+
+void setup() {
+    Serial.begin(9600);
+    lcd.init(); lcd.backlight();
+    dht.begin(); 
+    rtc.begin();
+    
+    // NẾU RTC CHƯA ĐÚNG GIỜ, BỎ DẤU // Ở DÒNG DƯỚI ĐỂ CÀI LẠI GIỜ MÁY TÍNH
+    rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
+
+    strip.begin(); 
+    strip.setBrightness(120); 
+    strip.show();
+
+    pinMode(BUTTON, INPUT_PULLUP);
+    attachInterrupt(digitalPinToInterrupt(BUTTON), handleButton, FALLING);
+
+    pinMode(INT1, OUTPUT); pinMode(INT2, OUTPUT);
+    pinMode(INT3, OUTPUT); pinMode(INT4, OUTPUT);
+    pinMode(PIN_SENSOR_PWR1, OUTPUT); pinMode(PIN_SENSOR_PWR2, OUTPUT);
+    pinMode(PIN_TRIG, OUTPUT); pinMode(PIN_ECHO, INPUT);
+    
+    pumps[0] = {INT1, INT2, 0, 0, false};
+    pumps[1] = {INT3, INT4, 0, 0, false};
+    changeState(SystemState::WARMUP);
+}
+
+void loop() {
+    unsigned long now = millis();
+
+    // 1. Cập nhật môi trường & LED
+    if (now - envTimer >= TIME_ENV_UPDATE) {
+    currentTemp = dht.readTemperature();
+    currentLightLevel = analogRead(PIN_LDR);
+    nowRTC = rtc.now();
+    waterLowCached = checkWaterLow(); 
+    envTimer = now;
+    }
+
+    updateLEDStatus();
+
+    // 2. Nút nhấn (Ưu tiên cao nhất)
+    if (manualTrigger) {
+        manualTrigger = false; 
+        if (currentState != SystemState::WATERING && !waterLowCached) {
+            pumps[0].duration = mediumDuration;
+            pumps[1].duration = mediumDuration;
+            needToWater = true;
+            changeState(SystemState::WATERING);
+            lcd.clear(); lcd.print("MANUAL OVERRIDE");
+        }
+    }
+
+    // 3. Máy trạng thái
+    switch (currentState) {
+        case SystemState::IDLE:
+            if (now - stateTimer >= TIME_IDLE) {
+                if (!waterLowCached && !isNight()) {
+                    changeState(SystemState::WARMUP);
+                } else {
+                    stateTimer = now;
+                }
+            }
+            break;
+
+
+        case SystemState::WARMUP:
+            if (now - stateTimer >= TIME_WARMUP) changeState(SystemState::READING);
+            break;
+
+        case SystemState::READING:
+            if (now - soilSampleTimer >= 1000) { 
+                soilSum1 += analogRead(PIN_SOIL_1); soilSum2 += analogRead(PIN_SOIL_2);
+                soilCount++; soilSampleTimer = now;
+            }
+            if (soilCount >= MAX_SAMPLES) { 
+                activeVeryDry = THR_VERY_DRY; activeDry = THR_DRY; activeMild = THR_MILD;
+                isHarshEnv = (currentTemp > 36 || currentLightLevel > 120);
+                if (isHarshEnv) { activeVeryDry -= 50; activeDry -= 50; activeMild -= 50; }
+                
+                avgs[0] = soilSum1/MAX_SAMPLES; avgs[1] = soilSum2/MAX_SAMPLES; 
+                needToWater = false;
+                for (int i = 0; i < 2; i++) {
+                    if (avgs[i] >= activeVeryDry) pumps[i].duration = longDuration; 
+                    else if (avgs[i] >= activeDry) pumps[i].duration = mediumDuration; 
+                    else if (avgs[i] >= activeMild) pumps[i].duration = shortDuration; 
+                    else pumps[i].duration = 0;
+                    if (pumps[i].duration > 0) needToWater = true;
+                }
+                changeState(SystemState::WATERING);
+            }
+            break;
+
+        case SystemState::WATERING:
+            if (waterLowCached) abortWatering = true;
+            updatePumpTasks(); 
+            if (!pumps[0].running && !pumps[1].running) {
+                abortWatering = false; changeState(SystemState::REPORT);
+            }
+            break;
+
+        case SystemState::REPORT:
+            if (now - stateTimer >= TIME_REPORT) changeState(SystemState::IDLE);
+            break;
+    }
+
+    // 4. Hiển thị LCD
+    if (now - lcdTimer >= ((currentState == SystemState::READING)||(currentState == SystemState::WARMUP) ? 1000 : TIME_LCD_PAGE)) {
+        lcd.clear();
+        if (currentState == SystemState::WARMUP) {
+            lcd.print("WARMING UP...");
+            lcd.setCursor(0, 1); lcd.print("Wait: "); lcd.print((TIME_WARMUP - (now - stateTimer)) / 1000); lcd.print("s");
+        } else if (currentState == SystemState::READING) {
+            lcd.print("Status: READING");
+            lcd.setCursor(0, 1); lcd.print("Samples: "); lcd.print(soilCount);
+        } else if (currentState == SystemState::WATERING) {
+            lcd.print("WATERING...");
+            lcd.setCursor(0, 1); lcd.print("P1:"); lcd.print(pumps[0].duration/1000); lcd.print("s P2:"); lcd.print(pumps[1].duration/1000);lcd.print("s");
+        } else if (currentState == SystemState::REPORT) {
+            lcd.print(needToWater ? "Watering Done!" : "Soil is Wet OK");
+        } else {
+            // IDLE Xoay vòng
+            lcdPage = (lcdPage + 1) % 4;
+            switch(lcdPage) {
+                case 0: 
+                    lcd.print("Time: "); lcd.print(nowRTC.hour()); lcd.print(":"); lcd.print(nowRTC.minute());
+                    lcd.setCursor(0,1); lcd.print("Temp: "); lcd.print(currentTemp); lcd.print("C"); 
+                    break;
+                case 1: 
+                    lcd.print("Water: "); 
+                    lcd.print(constrain(map(waterDistance, 20, 2, 0, 100), 0, 100)); lcd.print("%");
+                    if(waterLowCached) { lcd.setCursor(0,1); lcd.print("REFILL WATER!"); }
+                    break;
+                case 2: 
+                    lcd.print("Do am 1: "); lcd.print(constrain(map(avgs[0], 800, 250, 0, 100), 0, 100)); lcd.print("%");
+                    lcd.setCursor(0,1); lcd.print("Do am 2: "); lcd.print(constrain(map(avgs[1], 800, 250, 0, 100), 0, 100)); lcd.print("%"); 
+                    break;
+                case 3:
+                    if (isNight()) {
+                        lcd.print("Mode: NIGHT");
+                        lcd.setCursor(0,1); 
+                        lcd.print("LED On - Sleeping");
+                    } else {
+                        lcd.print("Mode: DAY");
+                        lcd.setCursor(0,1); 
+                        lcd.print("System Active");
+                    }
+                    break;
+            }
+        }
+        lcdTimer = now;
+    }
+}
