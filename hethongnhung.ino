@@ -28,7 +28,7 @@
 
 // --- Cấu hình Đối tượng ---
 Adafruit_NeoPixel strip(NUM_LEDS, PIN_NEO, NEO_GRB + NEO_KHZ800);
-LiquidCrystal_I2C lcd(0x27, 20, 4);
+LiquidCrystal_I2C lcd(0x27, 16, 2);
 DHT dht(PIN_DHT, DHTTYPE);
 RTC_DS3231 rtc;
 
