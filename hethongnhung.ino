@@ -10,17 +10,15 @@
 #define PIN_SOIL_1 A0
 #define PIN_SOIL_2 A1
 #define PIN_LDR    A3
-#define PIN_DHT    4
+#define PIN_DHT    A2
 #define DHTTYPE    DHT11
 
-#define BUTTON     2   
+#define PIN_BUTTON     2   
 #define PIN_NEO    13   // Chân dữ liệu LED NeoPixel
 #define NUM_LEDS   12  
 
-#define INT1 5
-#define INT2 6
-#define INT3 7
-#define INT4 8 
+#define PIN_RELAY_1 5   // bơm 1
+#define PIN_RELAY_2 6   // bơm 2
 
 #define PIN_SENSOR_PWR1 9
 #define PIN_SENSOR_PWR2 10
@@ -46,13 +44,15 @@ const int FULL_WATER_DISTANCE = 2;
 const int LOW_WATER_THRESHOLD = 20; 
 bool waterLowCached = false;
 
-int THR_VERY_DRY = 700; 
-int THR_DRY      = 550; 
-int THR_MILD     = 450; 
+const int THR_MAX_MOISTURE = 800;
+const int THR_MIN_MOISTURE = 220 ; 
+const int THR_VERY_DRY = 700; 
+const int THR_DRY      = 550; 
+const int THR_MILD     = 450; 
 int activeVeryDry, activeDry, activeMild; 
 bool isHarshEnv = false;
 
-enum class SystemState { IDLE, WARMUP, READING, WATERING, REPORT };
+enum class SystemState { IDLE, WARMUP, READING, WATERING, REPORT};
 SystemState currentState = SystemState::IDLE; 
 
 float soilSum1 = 0, soilSum2 = 0;
@@ -67,7 +67,7 @@ volatile bool manualTrigger = false;
 unsigned long lastDebounceTime = 0;
 
 struct PumpTask {
-    int pinA; int pinB;
+    int relayPin; 
     unsigned long duration;
     unsigned long startTime;
     bool running;
@@ -76,9 +76,9 @@ struct PumpTask {
 PumpTask pumps[2];
 bool abortWatering = false;
 bool needToWater = false;
-int longDuration = 6000; 
-int mediumDuration = 4000; 
-int shortDuration = 3000; 
+int longDuration = 6000; // not final
+int mediumDuration = 4000; // not final
+int shortDuration = 3000; // not final 
 
 unsigned long stateTimer = 0;
 unsigned long envTimer = 0;
@@ -176,18 +176,18 @@ void updatePumpTasks() {
     unsigned long now = millis();
     if (abortWatering) {
         for (int i = 0; i < 2; i++) {
-            digitalWrite(pumps[i].pinA, LOW); digitalWrite(pumps[i].pinB, LOW);
+            digitalWrite(pumps[i].relayPin, LOW);
             pumps[i].running = false; pumps[i].duration = 0;
         }
         return;
     }
     for (int i = 0; i < 2; i++) {
         if (!pumps[i].running && pumps[i].duration > 0) {
-            digitalWrite(pumps[i].pinA, HIGH); digitalWrite(pumps[i].pinB, LOW);
+            digitalWrite(pumps[i].relayPin, HIGH); 
             pumps[i].startTime = now; pumps[i].running = true;
         }
         if (pumps[i].running && (now - pumps[i].startTime >= pumps[i].duration)) {
-            digitalWrite(pumps[i].pinA, LOW); digitalWrite(pumps[i].pinB, LOW);
+            digitalWrite(pumps[i].relayPin, LOW); 
             pumps[i].running = false; pumps[i].duration = 0;
         }
     }
@@ -206,16 +206,15 @@ void setup() {
     strip.setBrightness(120); 
     strip.show();
 
-    pinMode(BUTTON, INPUT_PULLUP);
-    attachInterrupt(digitalPinToInterrupt(BUTTON), handleButton, FALLING);
+    pinMode(PIN_BUTTON, INPUT_PULLUP);
+    attachInterrupt(digitalPinToInterrupt(PIN_BUTTON), handleButton, FALLING);
 
-    pinMode(INT1, OUTPUT); pinMode(INT2, OUTPUT);
-    pinMode(INT3, OUTPUT); pinMode(INT4, OUTPUT);
+    pinMode(PIN_RELAY_1, OUTPUT);pinMode(PIN_RELAY_2, OUTPUT);
     pinMode(PIN_SENSOR_PWR1, OUTPUT); pinMode(PIN_SENSOR_PWR2, OUTPUT);
     pinMode(PIN_TRIG, OUTPUT); pinMode(PIN_ECHO, INPUT);
     
-    pumps[0] = {INT1, INT2, 0, 0, false};
-    pumps[1] = {INT3, INT4, 0, 0, false};
+    pumps[0] = {PIN_RELAY_1, 0, 0, false};
+    pumps[1] = {PIN_RELAY_2, 0, 0, false};
     changeState(SystemState::IDLE);
     wdt_enable(WDTO_4S);  // reset nếu treo quá 4 giây
 
@@ -235,6 +234,8 @@ void loop() {
     currentLightLevel = analogRead(PIN_LDR);
     nowRTC = rtc.now();
     waterLowCached = checkWaterLow(); 
+    Serial.println(currentLightLevel); 
+    Serial.println("--------------"); 
     envTimer = now;
     }
 
@@ -333,18 +334,30 @@ void loop() {
                     break;
                 case 1: 
                     lcd.print("Water: "); 
-                    lcd.print(constrain(map(waterDistance, 20, 2, 0, 100), 0, 100)); lcd.print("%");
-                    if(waterLowCached) { lcd.setCursor(0,1); lcd.print("REFILL WATER!"); }
+
+                    if (waterLowCached) {
+                        lcd.print("0%");
+                        lcd.setCursor(0,1);
+                        lcd.print("REFILL WATER!");
+                    } else {
+                        lcd.print(
+                            constrain(
+                                map(waterDistance, FULL_WATER_DISTANCE, LOW_WATER_THRESHOLD, 0, 100),
+                                0, 100
+                            )
+                        );
+                        lcd.print("%");
+                    }
                     break;
                 case 2: 
-                    lcd.print("Do am 1: "); lcd.print(constrain(map(avgs[0], 800, 250, 0, 100), 0, 100)); lcd.print("%");
-                    lcd.setCursor(0,1); lcd.print("Do am 2: "); lcd.print(constrain(map(avgs[1], 800, 250, 0, 100), 0, 100)); lcd.print("%"); 
+                    lcd.print("Do am 1: "); lcd.print(constrain(map(avgs[0], THR_MAX_MOISTURE, THR_MIN_MOISTURE, 0, 100), 0, 100)); lcd.print("%");
+                    lcd.setCursor(0,1); lcd.print("Do am 2: "); lcd.print(constrain(map(avgs[1], THR_MAX_MOISTURE, THR_MIN_MOISTURE, 0, 100), 0, 100)); lcd.print("%"); 
                     break;
                 case 3:
                     if (isNight()) {
                         lcd.print("Mode: NIGHT");
                         lcd.setCursor(0,1); 
-                        lcd.print("LED On - Sleeping");
+                        lcd.print("LED On-Sleeping");
                     } else {
                         lcd.print("Mode: DAY");
                         lcd.setCursor(0,1); 
@@ -357,7 +370,9 @@ void loop() {
                         lcd.setCursor(0,1) ; 
                         lcd.print("Harsh weather"); 
                     }else{
-                        lcd.print("Conditions normal"); 
+                        lcd.print("Conditions:"); 
+                        lcd.setCursor(0,1) ; 
+                        lcd.print("normal") ; 
                     }
                     break; 
             }

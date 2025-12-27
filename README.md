@@ -8,8 +8,11 @@ Dự án Arduino tưới cây tự động dựa trên độ ẩm đất và th�
 - DHT11
 - RTC DS3231
 - Bơm nước DC
-- L298N 
-
+- 2 Relay 5v DC
+- Quang trở 
+- LCD 16x02 
+- Module LED 12 neo pixel RGB 
+- Do khoảng cách HC SR04
 ## Chức năng chính
 - Không tưới ban đêm
 - Tưới theo mức độ ẩm đất
@@ -17,9 +20,9 @@ Dự án Arduino tưới cây tự động dựa trên độ ẩm đất và th�
 - Có thể mở rộng nhiều bơm chạy song song
 
 ## Logic tưới (tóm tắt)
-- Độ ẩm < 20% → tưới ngay
-- 40% – 60% → tưới nhẹ
-- > 60% → không tưới
+- Độ ẩm > 700 → tưới ngay
+- 450-550 → tưới nhẹ
+- <450 > → không tưới
 
 ## Trạng thái
 - Code được giữ lại để tham khảo 
