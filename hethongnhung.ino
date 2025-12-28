@@ -17,8 +17,8 @@
 #define PIN_NEO    13   // Chân dữ liệu LED NeoPixel
 #define NUM_LEDS   12  
 
-#define PIN_RELAY_1 5   // bơm 1
-#define PIN_RELAY_2 6   // bơm 2
+#define PIN_INT_1 5   // bơm 1
+#define PIN_INT_2 6   // bơm 2
 
 #define PIN_SENSOR_PWR1 9
 #define PIN_SENSOR_PWR2 10
@@ -67,7 +67,7 @@ volatile bool manualTrigger = false;
 unsigned long lastDebounceTime = 0;
 
 struct PumpTask {
-    int relayPin; 
+    int intPin; 
     unsigned long duration;
     unsigned long startTime;
     bool running;
@@ -176,18 +176,18 @@ void updatePumpTasks() {
     unsigned long now = millis();
     if (abortWatering) {
         for (int i = 0; i < 2; i++) {
-            digitalWrite(pumps[i].relayPin, LOW);
+            digitalWrite(pumps[i].intPin, LOW);
             pumps[i].running = false; pumps[i].duration = 0;
         }
         return;
     }
     for (int i = 0; i < 2; i++) {
         if (!pumps[i].running && pumps[i].duration > 0) {
-            digitalWrite(pumps[i].relayPin, HIGH); 
+            digitalWrite(pumps[i].intPin, HIGH); 
             pumps[i].startTime = now; pumps[i].running = true;
         }
         if (pumps[i].running && (now - pumps[i].startTime >= pumps[i].duration)) {
-            digitalWrite(pumps[i].relayPin, LOW); 
+            digitalWrite(pumps[i].intPin, LOW); 
             pumps[i].running = false; pumps[i].duration = 0;
         }
     }
@@ -209,12 +209,12 @@ void setup() {
     pinMode(PIN_BUTTON, INPUT_PULLUP);
     attachInterrupt(digitalPinToInterrupt(PIN_BUTTON), handleButton, FALLING);
 
-    pinMode(PIN_RELAY_1, OUTPUT);pinMode(PIN_RELAY_2, OUTPUT);
+    pinMode(PIN_INT_1, OUTPUT);pinMode(PIN_INT_2, OUTPUT);
     pinMode(PIN_SENSOR_PWR1, OUTPUT); pinMode(PIN_SENSOR_PWR2, OUTPUT);
     pinMode(PIN_TRIG, OUTPUT); pinMode(PIN_ECHO, INPUT);
     
-    pumps[0] = {PIN_RELAY_1, 0, 0, false};
-    pumps[1] = {PIN_RELAY_2, 0, 0, false};
+    pumps[0] = {PIN_INT_1, 0, 0, false};
+    pumps[1] = {PIN_INT_2, 0, 0, false};
     changeState(SystemState::IDLE);
     wdt_enable(WDTO_4S);  // reset nếu treo quá 4 giây
 
@@ -235,7 +235,9 @@ void loop() {
     nowRTC = rtc.now();
     waterLowCached = checkWaterLow(); 
     Serial.println(currentLightLevel); 
+    Serial.println(waterDistance);
     Serial.println("--------------"); 
+
     envTimer = now;
     }
 
