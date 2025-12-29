@@ -10,7 +10,7 @@
 #define PIN_SOIL_1 A0
 #define PIN_SOIL_2 A1
 #define PIN_LDR    A3
-#define PIN_DHT    A2
+#define PIN_DHT    4
 #define DHTTYPE    DHT11
 
 #define PIN_BUTTON     2   
@@ -76,9 +76,9 @@ struct PumpTask {
 PumpTask pumps[2];
 bool abortWatering = false;
 bool needToWater = false;
-int longDuration = 6000; // not final
-int mediumDuration = 4000; // not final
-int shortDuration = 3000; // not final 
+int longDuration = 5000; // not final
+int mediumDuration = 3000; // not final
+int shortDuration = 1000; // not final 
 
 unsigned long stateTimer = 0;
 unsigned long envTimer = 0;
@@ -164,7 +164,7 @@ void updateDynamicThresholds() {
     isHarshEnv = false;
 
     // Nếu t>36 hoặc l > 120 -> Giảm ngưỡng (tưới sớm hơn)
-    if (currentTemp > 36 || currentLightLevel > 120) {
+    if (currentTemp > 36 || currentLightLevel < 110) {
         activeVeryDry -= 50; 
         activeDry -= 50; 
         activeMild -= 50; 
@@ -200,14 +200,16 @@ void setup() {
     rtc.begin();
     
     // NẾU RTC CHƯA ĐÚNG GIỜ, BỎ DẤU // Ở DÒNG DƯỚI ĐỂ CÀI LẠI GIỜ MÁY TÍNH
-    //rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
+    rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
+    //rtc.adjust(DateTime(2025, 1, 1, 16, 30, 0));
+
 
     strip.begin(); 
     strip.setBrightness(120); 
     strip.show();
 
     pinMode(PIN_BUTTON, INPUT_PULLUP);
-    attachInterrupt(digitalPinToInterrupt(PIN_BUTTON), handleButton, FALLING);
+    attachInterrupt(digitalPinToInterrupt(PIN_BUTTON), handleButton, RISING);
 
     pinMode(PIN_INT_1, OUTPUT);pinMode(PIN_INT_2, OUTPUT);
     pinMode(PIN_SENSOR_PWR1, OUTPUT); pinMode(PIN_SENSOR_PWR2, OUTPUT);
@@ -215,9 +217,9 @@ void setup() {
     
     pumps[0] = {PIN_INT_1, 0, 0, false};
     pumps[1] = {PIN_INT_2, 0, 0, false};
-    changeState(SystemState::IDLE);
+    changeState(SystemState::WARMUP);
     wdt_enable(WDTO_4S);  // reset nếu treo quá 4 giây
-
+    delay(2000);
 }
 
 void loop() {
@@ -237,7 +239,7 @@ void loop() {
     Serial.println(currentLightLevel); 
     Serial.println(waterDistance);
     Serial.println("--------------"); 
-
+    updateDynamicThresholds() ; 
     envTimer = now;
     }
 
@@ -247,8 +249,8 @@ void loop() {
     if (manualTrigger) {
         manualTrigger = false; 
         if (currentState != SystemState::WATERING && !waterLowCached) {
-            pumps[0].duration = mediumDuration;
-            pumps[1].duration = mediumDuration;
+            pumps[0].duration = shortDuration;
+            pumps[1].duration = shortDuration;
             needToWater = true;
             changeState(SystemState::WATERING);
             lcd.clear(); lcd.print("MANUAL OVERRIDE");
@@ -344,7 +346,7 @@ void loop() {
                     } else {
                         lcd.print(
                             constrain(
-                                map(waterDistance, FULL_WATER_DISTANCE, LOW_WATER_THRESHOLD, 0, 100),
+                                map(waterDistance, LOW_WATER_THRESHOLD, FULL_WATER_DISTANCE, 0, 100),
                                 0, 100
                             )
                         );
@@ -374,7 +376,7 @@ void loop() {
                     }else{
                         lcd.print("Conditions:"); 
                         lcd.setCursor(0,1) ; 
-                        lcd.print("normal") ; 
+                        lcd.print("Normal") ; 
                     }
                     break; 
             }
