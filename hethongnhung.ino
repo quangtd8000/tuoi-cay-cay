@@ -201,7 +201,7 @@ void setup() {
     rtc.begin();
     
     // NẾU RTC CHƯA ĐÚNG GIỜ, BỎ DẤU // Ở DÒNG DƯỚI ĐỂ CÀI LẠI GIỜ MÁY TÍNH
-    .adjust(DateTime(F(__DATE__), F(__TIME__)));
+    rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
     //rtc.adjust(DateTime(2025, 1, 1, 16, 30, 0));
 
 
@@ -351,6 +351,7 @@ void loop() {
                     break;
                 case 1: 
                     lcd.print("Water: "); 
+
                     if (waterLowCached) {
                         lcd.print("0%");
                         lcd.setCursor(0,1);
