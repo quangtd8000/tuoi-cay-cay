@@ -43,7 +43,7 @@ const unsigned long TIME_REPORT     = 5000UL;
 const int           MAX_SAMPLES     = 10; 
 
 const int FULL_WATER_DISTANCE = 2; 
-const int LOW_WATER_THRESHOLD = 20; 
+const int LOW_WATER_THRESHOLD = 10; 
 bool waterLowCached = false;
 
 const int THR_MAX_MOISTURE = 800;
