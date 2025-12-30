@@ -33,13 +33,14 @@ DHT dht(PIN_DHT, DHTTYPE);
 RTC_DS3231 rtc;
 
 // --- BIẾN TOÀN CỤC ---
-const unsigned long TIME_IDLE_DAY   = 10UL *60 *1000;  // 10 phút
-const unsigned long TIME_IDLE_NIGHT = 60UL * 60 * 1000;  // 
-const unsigned long TIME_WARMUP     = 10UL * 1000; 
+const unsigned long TIME_IDLE_DAY   = 60000UL;
+const unsigned long TIME_IDLE_NIGHT = 3600000UL;
+const unsigned long TIME_WARMUP     = 10000UL;
+const unsigned long TIME_ENV_UPDATE = 2000UL;
+const unsigned long TIME_LCD_PAGE   = 2000UL;
+const unsigned long TIME_REPORT     = 5000UL;
+
 const int           MAX_SAMPLES     = 10; 
-const unsigned long TIME_ENV_UPDATE = 1UL *1000; 
-const unsigned long TIME_LCD_PAGE   = 2UL *1000;
-const unsigned long TIME_REPORT     = 5UL * 1000;
 
 const int FULL_WATER_DISTANCE = 2; 
 const int LOW_WATER_THRESHOLD = 20; 
@@ -77,9 +78,9 @@ struct PumpTask {
 PumpTask pumps[2];
 bool abortWatering = false;
 bool needToWater = false;
-const unsigned long LONG_DURATION = 5UL * 1000; // inal
-const unsigned long MEDIUM_DURATION  = 3UL * 1000; // final
-const unsigned long SHORT_DURATION =1UL * 1000; // final 
+const  long LONG_DURATION = 5000; // inal
+const  long MEDIUM_DURATION  = 3000; // final
+const  long SHORT_DURATION =1000; // final 
 
 unsigned long stateTimer = 0;
 unsigned long envTimer = 0;
@@ -218,7 +219,7 @@ void setup() {
     
     pumps[0] = {PIN_INT_1, 0, 0, false};
     pumps[1] = {PIN_INT_2, 0, 0, false};
-    changeState(SystemState::IDLE);
+    changeState(SystemState::WARMUP);
     wdt_enable(WDTO_4S);  // reset nếu treo quá 4 giây
     delay(2000);
 }
@@ -260,7 +261,7 @@ void loop() {
 
     // 3. trạng thái máy 
     switch (currentState) {
-        case SystemState::IDLE:
+        case SystemState::IDLE:{
             unsigned long idlePeriod = isNight() ? TIME_IDLE_NIGHT : TIME_IDLE_DAY;
 
             if (now - stateTimer >= idlePeriod) {
@@ -272,13 +273,13 @@ void loop() {
             }
 
             break;
-
+        }
         case SystemState::WARMUP:
             if (now - stateTimer >= TIME_WARMUP) changeState(SystemState::READING);
             break;
 
         case SystemState::READING:
-            if (now - soilSampleTimer >= 1UL* 1000) { 
+            if (now - soilSampleTimer >= 1000) { 
                 soilSum1 += analogRead(PIN_SOIL_1); soilSum2 += analogRead(PIN_SOIL_2);
                 soilCount++; soilSampleTimer = now;
             }
